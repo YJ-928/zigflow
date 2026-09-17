@@ -25,6 +25,7 @@ import (
 	"github.com/open-workflow-specification/sdk-go/v4/model"
 	"github.com/zigflow/zigflow/pkg/cloudevents"
 	"github.com/zigflow/zigflow/pkg/utils"
+	"github.com/zigflow/zigflow/pkg/zigflow/models"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
@@ -186,7 +187,10 @@ func (t *ListenTaskBuilder) await(
 	}
 	if !ok {
 		logger.Warn("Await timeout", "task", t.GetTaskName())
-		return fmt.Errorf("timeout")
+		return models.NewErrTimeout(
+			fmt.Errorf("no matching event received within %s", timeout),
+			workflow.GetInfo(ctx).WorkflowExecution.ID,
+		)
 	}
 
 	return nil
