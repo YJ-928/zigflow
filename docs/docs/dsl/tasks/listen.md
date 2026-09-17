@@ -207,7 +207,9 @@ As with the [signal](#signal), this has a timeout. This has to receive both a
 
 **The default timeout is 60 seconds.** If no matching event arrives within the
 timeout, the listen task times out and the workflow continues (or fails,
-depending on the flow directive). Set `metadata.timeout` explicitly for
+depending on the flow directive). The timeout is reported as a
+`https://zigflow.dev/spec/1.0.0/errors/timeout` error, the same type the
+[Raise](/docs/dsl/tasks/raise) task uses. Set `metadata.timeout` explicitly for
 long-running listeners.
 
 **Queries do not block.** A query handler registers immediately and returns the
