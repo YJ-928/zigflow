@@ -432,3 +432,101 @@ func TestForkTaskBuilderExecPropagatesUnexpectedCancellationInCompetingFork(t *t
 	assert.NotContains(t, workflowErr.Error(), "deadline exceeded",
 		"the fork must stop waiting rather than block until the workflow times out")
 }
+
+// TestForkTaskBuilderExecWaitsForBranchesWhenWorkflowCancelled covers
+// cancelling the workflow itself while a non-competing fork is running.
+// The fork must not close before its branches have been cancelled, or
+// the parent close policy terminates them and their tasks never observe
+// the cancellation.
+func TestForkTaskBuilderExecWaitsForBranchesWhenWorkflowCancelled(t *testing.T) {
+	var cancelled []string
+	sleeper := func(name string) forkBranch {
+		return func(ctx workflow.Context, _ any, _ *utils.State) (map[string]any, error) {
+			err := workflow.Sleep(ctx, time.Hour)
+			if temporal.IsCanceledError(err) {
+				cancelled = append(cancelled, name)
+			}
+			return nil, err
+		}
+	}
+
+	names := []string{"left", "right"}
+	branches := map[string]forkBranch{}
+	for _, name := range names {
+		branches[name] = sleeper(name)
+	}
+
+	env := runForkExecEnv(t, false, branches, func(env *testsuite.TestWorkflowEnvironment) {
+		env.RegisterDelayedCallback(env.CancelWorkflow, time.Second)
+	})
+
+	workflowErr := env.GetWorkflowError()
+	require.Error(t, workflowErr)
+	assert.True(t, temporal.IsCanceledError(workflowErr),
+		"the workflow cancellation must propagate as a cancellation, got: %v", workflowErr)
+	assert.ElementsMatch(t, names, cancelled,
+		"every branch must observe the cancellation before the fork returns")
+}
+
+// TestForkTaskBuilderExecWaitsForBranchCancellationCleanup covers a branch
+// that keeps running after it observes the cancellation. The fork must not
+// return until that cleanup has finished, otherwise the parent close policy
+// can terminate the branch part way through it.
+func TestForkTaskBuilderExecWaitsForBranchCancellationCleanup(t *testing.T) {
+	names := []string{"tidy-a", "tidy-b"}
+
+	forkedTasks := make([]*forkedTask, 0, len(names))
+	for _, name := range names {
+		forkedTasks = append(forkedTasks, &forkedTask{
+			task:              &model.TaskItem{Key: name},
+			childWorkflowName: "fork-" + name,
+			taskName:          name,
+		})
+	}
+
+	builder := &ForkTaskBuilder{name: "fork-task-cleanup", task: &model.ForkTask{}}
+	fn, err := builder.exec(forkedTasks)
+	require.NoError(t, err)
+
+	// events records, in order, each branch finishing its cleanup and the
+	// fork returning.
+	var events []string
+
+	var s testsuite.WorkflowTestSuite
+	env := s.NewTestWorkflowEnvironment()
+	for _, ft := range forkedTasks {
+		name := ft.taskName
+		env.RegisterWorkflowWithOptions(func(ctx workflow.Context, _ any, _ *utils.State) (map[string]any, error) {
+			err := workflow.Sleep(ctx, time.Hour)
+			if temporal.IsCanceledError(err) {
+				dctx, cancel := workflow.NewDisconnectedContext(ctx)
+				defer cancel()
+				_ = workflow.Sleep(dctx, time.Minute)
+				events = append(events, "cleaned-up "+name)
+			}
+			return nil, err
+		}, workflow.RegisterOptions{Name: ft.childWorkflowName})
+	}
+
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context) (any, error) {
+		res, err := fn(ctx, nil, utils.NewState())
+		events = append(events, "fork returned")
+		return res, err
+	}, workflow.RegisterOptions{Name: "fork-cleanup-host"})
+
+	env.RegisterDelayedCallback(env.CancelWorkflow, time.Second)
+	env.ExecuteWorkflow("fork-cleanup-host")
+
+	workflowErr := env.GetWorkflowError()
+	require.Error(t, workflowErr)
+	assert.True(t, temporal.IsCanceledError(workflowErr),
+		"the workflow cancellation must propagate as a cancellation, got: %v", workflowErr)
+	require.NotEmpty(t, events)
+	assert.Equal(t, "fork returned", events[len(events)-1],
+		"the fork must return only after every branch has finished its cleanup, got: %v", events)
+	want := []string{"fork returned"}
+	for _, name := range names {
+		want = append(want, "cleaned-up "+name)
+	}
+	assert.ElementsMatch(t, want, events)
+}

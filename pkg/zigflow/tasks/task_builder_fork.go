@@ -197,6 +197,9 @@ func (t *ForkTaskBuilder) exec(forkedTasks []*forkedTask) (TemporalWorkflowFunc,
 		for _, branch := range forkedTasks {
 			opts := workflow.ChildWorkflowOptions{
 				WorkflowID: fmt.Sprintf("%s_fork_%s", workflow.GetInfo(ctx).WorkflowExecution.ID, branch.task.Key),
+				// A cancelled branch's future then resolves only once the
+				// branch has closed, which awaitBranchesCancelled relies on.
+				WaitForCancellation: true,
 			}
 			if isCompeting {
 				// Allow cancellation of children
@@ -241,6 +244,13 @@ func (t *ForkTaskBuilder) exec(forkedTasks []*forkedTask) (TemporalWorkflowFunc,
 			// Wrap the function so the values are updated each time it's triggered
 			return t.awaitCondition(fs.replyErr, fs.endSeen, isCompeting, fs.winningCtx, fs.hasReplied)()
 		}); err != nil {
+			if temporal.IsCanceledError(err) {
+				// Closing now would terminate the branches under the parent
+				// close policy before they receive the cancellation.
+				logger.Debug("Fork cancelled, waiting for branches to be cancelled")
+				awaitBranchesCancelled(ctx, futures)
+				return nil, err
+			}
 			logger.Error("Error waiting for forked tasks to complete", "error", err)
 			return nil, fmt.Errorf("error waiting for forked tasks to complete: %w", err)
 		}
@@ -267,6 +277,23 @@ func (t *ForkTaskBuilder) exec(forkedTasks []*forkedTask) (TemporalWorkflowFunc,
 
 		return output, nil
 	}, nil
+}
+
+// awaitBranchesCancelled blocks until every branch future has resolved.
+// Branches are started with WaitForCancellation, so each branch has closed
+// when this returns.
+func awaitBranchesCancelled(ctx workflow.Context, futures *utils.CancellableFutures) {
+	dctx, cancel := workflow.NewDisconnectedContext(ctx)
+	defer cancel()
+
+	_ = workflow.Await(dctx, func() bool {
+		for _, f := range futures.List() {
+			if !f.Future.IsReady() {
+				return false
+			}
+		}
+		return true
+	})
 }
 
 // forkState bundles the mutable bookkeeping shared by all fork branch
