@@ -109,6 +109,9 @@ Only the winner's output is returned.
 the parent fork task and trigger the retry policy unless caught by a `try` task
 wrapping the branch.
 
+**Cancelling the workflow cancels every branch.** The fork waits for each
+branch to close as `CANCELED` before the workflow itself closes as `CANCELED`.
+
 ## Related pages
 
 - [Do](/docs/dsl/tasks/do): sequential execution

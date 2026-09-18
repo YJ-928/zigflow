@@ -1,0 +1,21 @@
+document:
+  dsl: 1.0.0
+  taskQueue: cancel-fork
+  workflowType: workflow
+  version: 0.0.1
+do:
+  - before:
+      set:
+        stage: before
+  - parallel:
+      fork:
+        branches:
+          - left:
+              wait:
+                minutes: 10
+          - right:
+              wait:
+                minutes: 10
+  - after:
+      set:
+        stage: after_fork_ran
