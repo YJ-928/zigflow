@@ -418,6 +418,11 @@ exist for Open Workflow Specification (formerly Serverless Workflow)
 compatibility only. The target workflow is looked up by `name` on the same
 task queue.
 
+**`run.workflow.input` becomes the child workflow's `$input`.** Runtime
+expressions in it are evaluated in the parent workflow before the child starts,
+so `${ $context.customerId }` reads the parent's context. Without `input`, the
+child receives the parent's input.
+
 ## Related pages
 
 - [Do](/docs/dsl/tasks/do): sequential subtask composition

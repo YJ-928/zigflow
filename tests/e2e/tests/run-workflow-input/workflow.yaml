@@ -1,0 +1,25 @@
+document:
+  dsl: 1.0.0
+  taskQueue: run-workflow-input
+  workflowType: orders
+  version: 0.0.1
+do:
+  - placeOrder:
+      do:
+        - lookUpCustomer:
+            export:
+              as: ${ . }
+            set:
+              customerId: 42
+        - greetCustomer:
+            run:
+              workflow:
+                type: greeter
+                input:
+                  id: ${ $context.customerId }
+  - greeter:
+      do:
+        - reply:
+            set:
+              greeted: ${ $input.id }
+              orderId: ${ $input.orderId }

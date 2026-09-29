@@ -230,6 +230,28 @@ func (t *RunTaskBuilder) runShell(ctx workflow.Context, input any, state *utils.
 	return t.executeCommand(ctx, name, input, state)
 }
 
+// childWorkflowInput returns the input and state for the child workflow. When
+// run.workflow.input is declared, its evaluated value becomes both the child's
+// argument and its $input, on a copy of the state so the parent's own $input
+// is unchanged. Without it, the parent's input and state pass through.
+func (t *RunTaskBuilder) childWorkflowInput(input any, state *utils.State) (any, *utils.State, error) {
+	if t.task.Run.Workflow.Input == nil {
+		return input, state, nil
+	}
+
+	// Evaluated in the workflow like any other expression outside a set task:
+	// zigflow validate rejects non-deterministic expressions here.
+	resolved, err := utils.TraverseAndEvaluateObj(model.NewObjectOrRuntimeExpr(t.task.Run.Workflow.Input), nil, state)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error evaluating run.workflow.input: %w", err)
+	}
+
+	childState := state.Clone()
+	childState.Input = resolved
+
+	return resolved, childState, nil
+}
+
 func (t *RunTaskBuilder) runWorkflow(ctx workflow.Context, input any, state *utils.State) (any, error) {
 	logger := workflow.GetLogger(ctx)
 	logger.Debug("Running a child workflow", "task", t.GetTaskName())
@@ -243,7 +265,13 @@ func (t *RunTaskBuilder) runWorkflow(ctx workflow.Context, input any, state *uti
 
 	ctx = workflow.WithChildOptions(ctx, opts)
 
-	future := workflow.ExecuteChildWorkflow(ctx, t.task.Run.Workflow.Name, input, state)
+	childInput, childState, err := t.childWorkflowInput(input, state)
+	if err != nil {
+		logger.Error("Error evaluating run.workflow.input", "task", t.GetTaskName(), "error", err)
+		return nil, err
+	}
+
+	future := workflow.ExecuteChildWorkflow(ctx, t.task.Run.Workflow.Name, childInput, childState)
 
 	if !await {
 		logger.Warn("Not waiting for child workspace response", "task", t.GetTaskName())

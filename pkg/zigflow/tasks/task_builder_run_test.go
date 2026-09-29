@@ -255,6 +255,138 @@ func TestRunTaskBuilderRunWorkflowPropagatesEndFromChild(t *testing.T) {
 		"the child workflow's end payload output must propagate through runWorkflow")
 }
 
+// TestRunTaskBuilderRunWorkflowInput proves that `run.workflow.input` is what
+// the child workflow receives, both as its argument and as `$input`, and that
+// a task without it keeps passing the parent's input through.
+func TestRunTaskBuilderRunWorkflowInput(t *testing.T) {
+	const (
+		childWorkflowName = "input-child"
+		inputKey          = "id"
+	)
+	parentInput := map[string]any{"orderId": float64(7)}
+
+	tests := []struct {
+		name     string
+		input    map[string]any
+		expected any
+	}{
+		{
+			name: "declared input is evaluated and passed to the child",
+			input: map[string]any{
+				inputKey: "${ $context.customerId }",
+				"source": "static",
+			},
+			expected: map[string]any{inputKey: float64(42), "source": "static"},
+		},
+		{
+			name:     "declared empty input passes an empty object",
+			input:    map[string]any{},
+			expected: map[string]any{},
+		},
+		{
+			name:     "no declared input passes the parent input through",
+			input:    nil,
+			expected: parentInput,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &model.RunTask{
+				Run: model.RunTaskConfiguration{
+					Await: new(true),
+					Workflow: &model.RunWorkflow{
+						Namespace: constDefaultNamespace,
+						Name:      childWorkflowName,
+						Version:   testConstRunWorkflowVersion,
+						Input:     tc.input,
+					},
+				},
+			}
+
+			builder, err := NewRunTaskBuilder(nil, task, "run-input-task", nil, testEvents, nil)
+			require.NoError(t, err)
+
+			fn, err := builder.Build()
+			require.NoError(t, err)
+
+			var s testsuite.WorkflowTestSuite
+			env := s.NewTestWorkflowEnvironment()
+
+			env.RegisterWorkflowWithOptions(func(_ workflow.Context, input any, state *utils.State) (any, error) {
+				return map[string]any{"arg": input, "stateInput": state.Input}, nil
+			}, workflow.RegisterOptions{Name: childWorkflowName})
+
+			state := utils.NewState()
+			state.Input = parentInput
+			state.Context = map[string]any{"customerId": 42}
+
+			env.RegisterWorkflowWithOptions(func(ctx workflow.Context) (any, error) {
+				return fn(ctx, parentInput, state)
+			}, workflow.RegisterOptions{Name: "run-input-host"})
+
+			env.ExecuteWorkflow("run-input-host")
+			require.NoError(t, env.GetWorkflowError())
+
+			var result map[string]any
+			require.NoError(t, env.GetWorkflowResult(&result))
+			assert.Equal(t, tc.expected, result["arg"], "child workflow argument")
+			assert.Equal(t, tc.expected, result["stateInput"], "child $input")
+			assert.Equal(t, parentInput, state.Input, "the parent's own input must not change")
+		})
+	}
+}
+
+// TestRunTaskBuilderRunWorkflowInputEvaluationError proves that an input
+// expression that fails to evaluate fails the task before the child starts.
+func TestRunTaskBuilderRunWorkflowInputEvaluationError(t *testing.T) {
+	const childWorkflowName = "input-error-child"
+
+	task := &model.RunTask{
+		Run: model.RunTaskConfiguration{
+			Await: new(true),
+			Workflow: &model.RunWorkflow{
+				Namespace: constDefaultNamespace,
+				Name:      childWorkflowName,
+				Version:   testConstRunWorkflowVersion,
+				Input: map[string]any{
+					"customer": `${ $context.customerId + "x" }`,
+				},
+			},
+		},
+	}
+
+	builder, err := NewRunTaskBuilder(nil, task, "run-input-error-task", nil, testEvents, nil)
+	require.NoError(t, err)
+
+	fn, err := builder.Build()
+	require.NoError(t, err)
+
+	var s testsuite.WorkflowTestSuite
+	env := s.NewTestWorkflowEnvironment()
+
+	childStarted := false
+	env.RegisterWorkflowWithOptions(func(_ workflow.Context, _ any, _ *utils.State) (any, error) {
+		childStarted = true
+		return nil, nil
+	}, workflow.RegisterOptions{Name: childWorkflowName})
+
+	var runErr error
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context) error {
+		state := utils.NewState()
+		state.Context = map[string]any{"customerId": 42}
+		_, runErr = fn(ctx, nil, state)
+		return nil
+	}, workflow.RegisterOptions{Name: "run-input-error-host"})
+
+	env.ExecuteWorkflow("run-input-error-host")
+	require.NoError(t, env.GetWorkflowError())
+
+	require.Error(t, runErr)
+	assert.Contains(t, runErr.Error(), "run.workflow.input")
+	assert.False(t, childStarted, "the child workflow must not start")
+}
+
 func TestRunTaskBuilderRunScriptValidation(t *testing.T) {
 	t.Parallel()
 
