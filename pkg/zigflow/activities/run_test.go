@@ -24,6 +24,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/open-workflow-specification/sdk-go/v4/model"
@@ -251,7 +252,10 @@ func TestCallContainerActivityNilEnvVarCoercedToEmpty(t *testing.T) {
 // honoured by the exec. runExecCommand is unexported, so it is wrapped in a
 // local closure to satisfy the test activity environment.
 func TestRunExecCommandRespectsWorkingDirectory(t *testing.T) {
-	dir := t.TempDir()
+	// The temp dir can sit behind a symlink (/var -> /private/var on macOS), and
+	// pwd reports the resolved path, so compare against the resolved dir.
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 
 	run := &Run{}
 	var s testsuite.WorkflowTestSuite
